@@ -4,3 +4,9 @@ job,company,requirements,preferred
 프론트엔드 개발자,C회사,"JavaScript, React, HTML, CSS 필수","TypeScript 우대"
 데이터 분석가,D회사,"Python, Pandas, SQL 사용 가능자","머신러닝 경험 우대"
 데이터 분석가,E회사,"Python, NumPy, Pandas 필수","PyTorch 경험자 우대"
+job,company,requirements,preferred
+백엔드 개발자,A회사,"Python, SQL, FastAPI 사용 가능자","AWS, Docker 경험자 우대"
+백엔드 개발자,B회사,"Java, Spring Boot, MySQL 필수","Docker, Kubernetes 우대"
+프론트엔드 개발자,C회사,"JavaScript, React, HTML, CSS 필수","TypeScript 우대"
+데이터 분석가,D회사,"Python, Pandas, SQL 사용 가능자","머신러닝 경험 우대"
+데이터 분석가,E회사,"Python, NumPy, Pandas 필수","PyTorch 경험자 우대"
