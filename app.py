@@ -1,8 +1,58 @@
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
-from analyzer import search_jobs
+from urllib.parse import quote
+from typing import Optional
+import re
+import html
+
+from analyzer import search_jobs, load_data, get_all_jobs, analyze_job, normalize_text, make_summary_message
 
 app = FastAPI()
+
+
+def localize_job_title(job_title: str) -> str:
+    # 간단한 사전/치환 기반 한글화(표시용)
+    text = str(job_title or "").strip()
+    if not text:
+        return text
+
+    replacements = [
+        ("Senior", "시니어"),
+        ("Junior", "주니어"),
+        ("Staff", "스태프"),
+        ("Lead", "리드"),
+        ("Principal", "프린시펄"),
+        ("Backend", "백엔드"),
+        ("Back-End", "백엔드"),
+        ("Frontend", "프론트엔드"),
+        ("Front-End", "프론트엔드"),
+        ("Fullstack", "풀스택"),
+        ("Full-Stack", "풀스택"),
+        ("Data", "데이터"),
+        ("Software", "소프트웨어"),
+        ("Application", "애플리케이션"),
+        ("Security", "보안"),
+        ("Support", "지원"),
+        ("Engineer", "엔지니어"),
+        ("Developer", "개발자"),
+        ("Analyst", "분석가"),
+        ("Scientist", "사이언티스트"),
+        ("Architect", "아키텍트"),
+        ("Manager", "매니저"),
+        ("Consultant", "컨설턴트"),
+        ("Group Lead", "그룹 리드"),
+        ("Team Lead", "팀 리드"),
+        ("Contract", "계약직"),
+    ]
+
+    translated = text
+    for en, ko in replacements:
+        translated = re.sub(rf"\b{re.escape(en)}\b", ko, translated, flags=re.IGNORECASE)
+
+    translated = re.sub(r"\s+", " ", translated).strip()
+    if normalize_text(translated) == normalize_text(text):
+        return text
+    return f"{translated} ({text})"
 
 
 def render_skill_table(title: str, skills: list) -> str:
@@ -39,6 +89,22 @@ def render_skill_table(title: str, skills: list) -> str:
     """
 
 
+def render_search_form(current_query: str = "") -> str:
+    escaped_query = html.escape(str(current_query or ""))
+    return f"""
+    <form action="/search" method="get" style="margin: 16px 0 24px 0;">
+        <input
+            type="text"
+            name="query"
+            value="{escaped_query}"
+            placeholder="예: 백엔드 개발자 우대 기술 알려줘"
+            style="width: 500px; padding: 10px;"
+        >
+        <button type="submit" style="padding: 10px 16px;">검색</button>
+    </form>
+    """
+
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
@@ -51,10 +117,7 @@ def home():
         <h1>채용공고 기반 직무 기술 스택 분석</h1>
         <p>직무명을 입력해보세요.</p>
 
-        <form action="/search" method="get" style="margin-bottom: 20px;">
-            <input type="text" name="query" placeholder="예: 백엔드 개발자 우대 기술 알려줘" style="width: 500px; padding: 10px;">
-            <button type="submit" style="padding: 10px 16px;">검색</button>
-        </form>
+        """ + render_search_form("") + """
 
         <h3>예시 질문</h3>
         <ul>
@@ -69,8 +132,44 @@ def home():
 
 
 @app.get("/search", response_class=HTMLResponse)
-def search(query: str = Query(..., description="검색할 직무 또는 질문")):
-    data = search_jobs(query)
+def search(
+    query: Optional[str] = Query(None, description="검색할 직무 또는 질문"),
+    selected_job: Optional[str] = Query(None, description="후보에서 선택한 확정 직무"),
+):
+    if selected_job:
+        # selected_job 경로는 재검색이 아니라 선택 확정: 정규화 없이 정확 직무 분석
+        df = load_data()
+        jobs = get_all_jobs(df)
+        selected_norm = normalize_text(selected_job)
+        exact_job = next((job for job in jobs if normalize_text(job) == selected_norm), None)
+
+        if not exact_job:
+            data = {
+                "status": "not_found",
+                "query": selected_job,
+                "question_type": "all",
+                "message": "선택한 직무를 데이터에서 찾지 못했습니다."
+            }
+        else:
+            result = analyze_job(df, exact_job)
+            question_type = "all"
+            data = {
+                "status": "success",
+                "query": selected_job,
+                "question_type": question_type,
+                "result": result,
+                "message": make_summary_message(result, question_type),
+            }
+    else:
+        if not query:
+            data = {
+                "status": "not_found",
+                "query": "",
+                "question_type": "all",
+                "message": "검색어를 입력해주세요."
+            }
+        else:
+            data = search_jobs(query)
 
     base_style = """
     font-family: Arial, sans-serif;
@@ -85,6 +184,7 @@ def search(query: str = Query(..., description="검색할 직무 또는 질문")
         <head><meta charset="utf-8"><title>검색 결과</title></head>
         <body style="{base_style}">
             <h1>검색 결과</h1>
+            {render_search_form(data['query'])}
             <p><strong>입력:</strong> {data['query']}</p>
             <p style="color: red;">{data['message']}</p>
             <a href="/">← 돌아가기</a>
@@ -95,10 +195,12 @@ def search(query: str = Query(..., description="검색할 직무 또는 질문")
     if data["status"] == "multiple":
         candidate_links = ""
         for candidate in data["candidates"]:
+            encoded_candidate = quote(candidate)
+            display_candidate = localize_job_title(candidate)
             candidate_links += f"""
             <li>
-                <a href="/search?query={candidate}" style="text-decoration: none;">
-                    {candidate}
+                <a href="/search?selected_job={encoded_candidate}" style="text-decoration: none;">
+                    {display_candidate}
                 </a>
             </li>
             """
@@ -108,6 +210,7 @@ def search(query: str = Query(..., description="검색할 직무 또는 질문")
         <head><meta charset="utf-8"><title>직무 후보</title></head>
         <body style="{base_style}">
             <h1>직무 후보</h1>
+            {render_search_form(data['query'])}
             <p><strong>입력:</strong> {data['query']}</p>
             <p><strong>질문 의도:</strong> {data['question_type']}</p>
             <p>{data['message']}</p>
@@ -139,7 +242,8 @@ def search(query: str = Query(..., description="검색할 직무 또는 질문")
     <html>
     <head><meta charset="utf-8"><title>분석 결과</title></head>
     <body style="{base_style}">
-        <h1>{result['job']} 분석 결과</h1>
+        <h1>{localize_job_title(result['job'])} 분석 결과</h1>
+        {render_search_form(data['query'])}
 
         <p><strong>입력:</strong> {data['query']}</p>
         <p><strong>질문 의도:</strong> {question_type}</p>
