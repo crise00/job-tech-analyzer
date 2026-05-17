@@ -1,36 +1,128 @@
 import os
+import re
+from typing import Any, Dict, List
 
 import pandas as pd
 import requests
 
 
-API_URL = "https://boards-api.greenhouse.io/v1/boards/appsflyer/jobs?content=true"
 OUTPUT_PATH = os.path.join("data", "appsflyer_jobs.csv")
+GREENHOUSE_SOURCES = {
+    "appsflyer": "https://boards-api.greenhouse.io/v1/boards/appsflyer/jobs?content=true",
+}
+LEVER_COMPANIES = [
+    "wealthfront",
+    "palantir",
+    "offchainlabs",
+    "palantir",
+    "spotify",
+    "zerion",
+    "modulate",
+    "binance",
+    "xsolla",
+    "resilientco",
+    "jobgether",
+]
 
 
-def main() -> None:
-    response = requests.get(API_URL, timeout=15)
+def strip_html(text: str) -> str:
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(raw, "lxml")
+        clean = soup.get_text(separator=" ", strip=True)
+    except Exception:
+        clean = re.sub(r"<[^>]+>", " ", raw)
+    return re.sub(r"\s+", " ", clean).strip()
+
+
+def lever_list_sections(lists: Any) -> List[str]:
+    """Lever `lists[].content` is HTML string, not a list of items."""
+    sections: List[str] = []
+    for section in lists or []:
+        content = (section or {}).get("content")
+        if not content:
+            continue
+        if isinstance(content, list):
+            for item in content:
+                if item:
+                    sections.append(strip_html(str(item)))
+        else:
+            sections.append(strip_html(str(content)))
+    return sections
+
+
+def collect_greenhouse_rows(company: str, api_url: str) -> List[Dict[str, Any]]:
+    response = requests.get(api_url, timeout=20)
     response.raise_for_status()
-
     data = response.json()
     jobs = data.get("jobs", [])
     rows = []
-
     for job in jobs:
-        title = job.get("title", "")
-        location_name = (job.get("location") or {}).get("name", "")
-        absolute_url = job.get("absolute_url", "")
-        content = job.get("content", "")
         rows.append(
             {
-                "title": title,
-                "location_name": location_name,
-                "absolute_url": absolute_url,
-                "content": content,
+                "company": company,
+                "source_platform": "greenhouse",
+                "title": job.get("title", ""),
+                "location_name": (job.get("location") or {}).get("name", ""),
+                "absolute_url": job.get("absolute_url", ""),
+                "content": strip_html(job.get("content", "")),
             }
         )
+    return rows
 
-    df = pd.DataFrame(rows, columns=["title", "location_name", "absolute_url", "content"])
+
+def collect_lever_rows(company: str) -> List[Dict[str, Any]]:
+    api_url = f"https://api.lever.co/v0/postings/{company}?mode=json"
+    response = requests.get(api_url, timeout=20)
+    response.raise_for_status()
+    postings = response.json()
+    rows = []
+    for posting in postings:
+        categories = posting.get("categories") or {}
+        description = posting.get("descriptionPlain") or posting.get("description") or ""
+        list_contents = lever_list_sections(posting.get("lists"))
+        full_content = " ".join([strip_html(description), *list_contents]).strip()
+        rows.append(
+            {
+                "company": company,
+                "source_platform": "lever",
+                "title": posting.get("text", ""),
+                "location_name": categories.get("location", ""),
+                "absolute_url": posting.get("hostedUrl", ""),
+                "content": full_content,
+            }
+        )
+    return rows
+
+
+def main() -> None:
+    rows = []
+    for company, api_url in GREENHOUSE_SOURCES.items():
+        company_rows = collect_greenhouse_rows(company, api_url)
+        rows.extend(company_rows)
+        print(f"[greenhouse] {company}: {len(company_rows)}건 수집")
+
+    unique_lever_companies = list(dict.fromkeys(LEVER_COMPANIES))
+    for company in unique_lever_companies:
+        company_rows = collect_lever_rows(company)
+        rows.extend(company_rows)
+        print(f"[lever] {company}: {len(company_rows)}건 수집")
+
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "company",
+            "source_platform",
+            "title",
+            "location_name",
+            "absolute_url",
+            "content",
+        ],
+    )
     os.makedirs("data", exist_ok=True)
     df.to_csv(OUTPUT_PATH, index=False, encoding="utf-8")
 

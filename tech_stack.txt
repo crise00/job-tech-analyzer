@@ -1,8 +1,8 @@
 Python
 Java
+Kotlin
 JavaScript
 TypeScript
-C
 C++
 C#
 Spring
@@ -12,6 +12,9 @@ FastAPI
 React
 Vue
 Node.js
+Android
+Jetpack Compose
+Gradle
 SQL
 MySQL
 PostgreSQL
@@ -23,6 +26,7 @@ GCP
 Docker
 Kubernetes
 Git
+GitHub
 Linux
 TensorFlow
 PyTorch
@@ -30,35 +34,6 @@ Pandas
 NumPy
 HTML
 CSS
-Python
-Java
-JavaScript
-TypeScript
-C
-C++
-C#
-Spring
-Spring Boot
-Django
-FastAPI
-React
-Vue
-Node.js
-SQL
-MySQL
-PostgreSQL
-MongoDB
-Oracle
-AWS
-Azure
-GCP
-Docker
-Kubernetes
-Git
-Linux
-TensorFlow
-PyTorch
-Pandas
-NumPy
-HTML
-CSS
+Swift
+Flutter
+iOS

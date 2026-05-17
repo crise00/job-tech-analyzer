@@ -1,7 +1,7 @@
 import os
 import re
 from collections import Counter
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set
 
 import pandas as pd
 
@@ -131,7 +131,13 @@ def extract_technologies(text: str, tech_stack: List[str] = None) -> List[str]:
 
         # 영문/숫자 포함 기술은 단어 경계로 검사
         if re.search(r"[a-z0-9]", tech_lower):
-            pattern = r"(?<![a-z0-9])" + re.escape(tech_lower) + r"(?![a-z0-9])"
+            if tech_lower == "c":
+                # C++ / C# 의 'c'를 단독 C로 잡지 않음
+                pattern = r"(?<![a-z0-9+#])c(?![+#a-z0-9])"
+            elif tech_lower == "c#":
+                pattern = r"(?<![a-z0-9])c#(?![a-z0-9])"
+            else:
+                pattern = r"(?<![a-z0-9])" + re.escape(tech_lower) + r"(?![a-z0-9])"
             if re.search(pattern, text):
                 found.append(tech)
         else:
@@ -165,9 +171,17 @@ def load_data() -> pd.DataFrame:
             if col not in df.columns:
                 raise ValueError(f"CSV에 '{col}' 컬럼이 없습니다.")
 
+    for col in ("company", "source_platform", "location_name", "absolute_url"):
+        if col not in df.columns:
+            df[col] = ""
+
     df["job"] = df["job"].fillna("").astype(str).str.strip()
     df["requirements"] = df["requirements"].fillna("").astype(str)
     df["preferred"] = df["preferred"].fillna("").astype(str)
+    df["company"] = df["company"].fillna("").astype(str).str.strip()
+    df["source_platform"] = df["source_platform"].fillna("").astype(str).str.strip()
+    df["location_name"] = df["location_name"].fillna("").astype(str).str.strip()
+    df["absolute_url"] = df["absolute_url"].fillna("").astype(str).str.strip()
 
     return df
 
@@ -247,12 +261,18 @@ def extract_job_candidates(query: str, jobs: List[str]) -> List[str]:
 def analyze_job(df: pd.DataFrame, job_name: str) -> Dict[str, Any]:
     target_df = df[df["job"].str.strip() == job_name].copy()
 
+    postings_preview_limit = 40
+
     if target_df.empty:
         return {
             "job": job_name,
             "count": 0,
             "required_skills": [],
             "preferred_skills": [],
+            "sources_breakdown": [],
+            "postings": [],
+            "postings_preview_limit": postings_preview_limit,
+            "postings_truncated": False,
         }
 
     required_counter = Counter()
@@ -283,11 +303,74 @@ def analyze_job(df: pd.DataFrame, job_name: str) -> Dict[str, Any]:
             "percent": round((count / total) * 100, 1)
         })
 
+    sources_breakdown: List[Dict[str, Any]] = []
+    postings: List[Dict[str, Any]] = []
+    postings_truncated = False
+    if "company" in target_df.columns and "source_platform" in target_df.columns:
+        key_counts: Counter = Counter()
+        for _, row in target_df.iterrows():
+            company = str(row.get("company", "") or "").strip()
+            platform = str(row.get("source_platform", "") or "").strip()
+            key_counts[(company, platform)] += 1
+        for (company, platform), cnt in key_counts.most_common():
+            sources_breakdown.append({
+                "company": company,
+                "source_platform": platform,
+                "count": cnt,
+            })
+        postings_truncated = total > postings_preview_limit
+        for _, row in target_df.head(postings_preview_limit).iterrows():
+            postings.append({
+                "job_title": str(row.get("job", "") or "").strip(),
+                "company": str(row.get("company", "") or "").strip(),
+                "source_platform": str(row.get("source_platform", "") or "").strip(),
+                "location_name": str(row.get("location_name", "") or "").strip(),
+                "absolute_url": str(row.get("absolute_url", "") or "").strip(),
+            })
+
     return {
         "job": job_name,
         "count": total,
         "required_skills": required_skills,
         "preferred_skills": preferred_skills,
+        "sources_breakdown": sources_breakdown,
+        "postings": postings,
+        "postings_preview_limit": postings_preview_limit,
+        "postings_truncated": postings_truncated,
+    }
+
+
+def parse_user_skills(text: str) -> Set[str]:
+    if not text or not str(text).strip():
+        return set()
+    parts = re.split(r"[,;/\n]+", str(text))
+    return {normalize_text(p) for p in parts if p.strip()}
+
+
+def compute_skill_gap(
+    required_skills: List[Dict[str, Any]],
+    user_skills_text: str,
+    top_n: int = 10,
+) -> Dict[str, Any]:
+    """직무 요구 기술 상위 top_n개와 사용자 입력 스킬을 비교해 갭을 계산한다."""
+    targets = required_skills[:top_n]
+    user_set = parse_user_skills(user_skills_text)
+    matched: List[str] = []
+    missing: List[str] = []
+    for item in targets:
+        skill = item["skill"]
+        sn = normalize_text(str(skill))
+        if sn in user_set:
+            matched.append(skill)
+        else:
+            missing.append(skill)
+    total = len(targets)
+    pct = round((len(matched) / total) * 100, 1) if total else 0.0
+    return {
+        "target_count": total,
+        "matched_skills": matched,
+        "missing_skills": missing,
+        "match_percent": pct,
     }
 
 
