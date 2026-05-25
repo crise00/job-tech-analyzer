@@ -340,11 +340,153 @@ def analyze_job(df: pd.DataFrame, job_name: str) -> Dict[str, Any]:
     }
 
 
+SKILL_ALIASES: dict[str, str] = {
+    # SQL 계열
+    "에스큐엘": "sql", "에스큐엘": "sql", "에쓱엘": "sql", "씨퀄": "sql",
+    "mysql": "mysql", "마이에스큐엘": "mysql", "마이씨퀄": "mysql",
+    "postgresql": "postgresql", "포스트그레스": "postgresql", "포스그레": "postgresql",
+    "postgres": "postgresql",
+    "mssql": "mssql",
+    # Python
+    "파이썬": "python", "파이선": "python", "파이톤": "python", "파이쏜": "python",
+    # JavaScript / TypeScript
+    "자바스크립트": "javascript", "자스": "javascript", "js": "javascript",
+    "타입스크립트": "typescript", "ts": "typescript",
+    # Java
+    "자바": "java",
+    # C 계열
+    "씨플플": "c++", "씨뿔뿔": "c++", "씨쁠쁠": "c++", "cpp": "c++",
+    "씨샵": "c#", "시샵": "c#", "csharp": "c#",
+    # Go / Rust
+    "고랭": "go", "golang": "go",
+    "러스트": "rust",
+    # Kotlin / Swift
+    "코틀린": "kotlin",
+    "스위프트": "swift",
+    # Web
+    "리액트": "react", "react.js": "react", "reactjs": "react",
+    "뷰": "vue", "vue.js": "vue", "vuejs": "vue",
+    "앵귤러": "angular", "angular.js": "angular", "angularjs": "angular",
+    "노드": "node.js", "노드제이에스": "node.js", "nodejs": "node.js", "node": "node.js",
+    "넥스트": "next.js", "nextjs": "next.js",
+    # Infra / DevOps
+    "도커": "docker", "독커": "docker",
+    "쿠버네티스": "kubernetes", "쿠버": "kubernetes", "k8s": "kubernetes",
+    "젠킨스": "jenkins",
+    "테라폼": "terraform",
+    "앤서블": "ansible", "앤시블": "ansible",
+    # Cloud
+    "에이더블유에스": "aws", "아마존웹서비스": "aws",
+    "지씨피": "gcp", "구글클라우드": "gcp",
+    "애저": "azure",
+    # DB
+    "몽고디비": "mongodb", "몽고": "mongodb", "mongo": "mongodb",
+    "레디스": "redis",
+    "카프카": "kafka",
+    "엘라스틱서치": "elasticsearch", "엘라스틱": "elasticsearch", "elastic": "elasticsearch",
+    # ML / AI
+    "텐서플로": "tensorflow", "텐서플로우": "tensorflow",
+    "파이토치": "pytorch", "토치": "pytorch",
+    # Git
+    "깃": "git", "깃허브": "github", "깃랩": "gitlab",
+    # Misc
+    "스프링": "spring", "스프링부트": "spring boot",
+    "플러터": "flutter",
+    "리눅스": "linux",
+    "그래들": "gradle",
+}
+
+
+_ALL_KNOWN_SKILLS: set[str] | None = None
+
+
+def _get_known_skills() -> set[str]:
+    global _ALL_KNOWN_SKILLS
+    if _ALL_KNOWN_SKILLS is None:
+        base = {normalize_text(t) for t in TECH_STACK}
+        base |= set(SKILL_ALIASES.values())
+        _ALL_KNOWN_SKILLS = {s for s in base if s}
+    return _ALL_KNOWN_SKILLS
+
+
+def _normalize_skill(raw: str) -> str:
+    n = normalize_text(raw)
+    return SKILL_ALIASES.get(n, n)
+
+
+def _edit_distance(a: str, b: str) -> int:
+    if len(a) < len(b):
+        a, b = b, a
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        for j, cb in enumerate(b):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (0 if ca == cb else 1)))
+        prev = curr
+    return prev[-1]
+
+
+_DISPLAY_MAP: dict[str, str] | None = None
+
+
+def _get_display_map() -> dict[str, str]:
+    global _DISPLAY_MAP
+    if _DISPLAY_MAP is None:
+        _DISPLAY_MAP = {normalize_text(t): t for t in TECH_STACK}
+        for v in SKILL_ALIASES.values():
+            if v not in _DISPLAY_MAP:
+                _DISPLAY_MAP[v] = v
+    return _DISPLAY_MAP
+
+
+def suggest_skill(raw: str) -> dict | None:
+    n = normalize_text(raw)
+    if not n or len(n) < 2:
+        return None
+    if SKILL_ALIASES.get(n):
+        return None
+    known = _get_known_skills()
+    if n in known:
+        return None
+
+    best, best_dist = None, 999
+    max_dist = max(1, len(n) // 3)
+    for candidate in known:
+        if abs(len(candidate) - len(n)) > max_dist:
+            continue
+        d = _edit_distance(n, candidate)
+        if d < best_dist:
+            best_dist = d
+            best = candidate
+
+    if best and best_dist <= max_dist:
+        dm = _get_display_map()
+        return {"input": raw.strip(), "suggestion": best, "display": dm.get(best, best)}
+    return None
+
+
+def suggest_skills_bulk(text: str) -> list[dict]:
+    if not text or not str(text).strip():
+        return []
+    parts = re.split(r"[,;/\n]+", str(text))
+    results = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        s = suggest_skill(p)
+        if s:
+            results.append(s)
+    return results
+
+
 def parse_user_skills(text: str) -> Set[str]:
     if not text or not str(text).strip():
         return set()
     parts = re.split(r"[,;/\n]+", str(text))
-    return {normalize_text(p) for p in parts if p.strip()}
+    return {_normalize_skill(p) for p in parts if p.strip()}
 
 
 def compute_skill_gap(
@@ -359,7 +501,7 @@ def compute_skill_gap(
     missing: List[str] = []
     for item in targets:
         skill = item["skill"]
-        sn = normalize_text(str(skill))
+        sn = _normalize_skill(str(skill))
         if sn in user_set:
             matched.append(skill)
         else:

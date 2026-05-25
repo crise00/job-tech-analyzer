@@ -21,7 +21,33 @@ body.app-body {
     margin: 0 auto;
     display: flex;
     align-items: center;
+    justify-content: space-between;
 }
+.app-user-nav {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.app-user-name {
+    font-weight: 600;
+    color: #334155;
+    font-size: 0.93rem;
+}
+.app-user-link {
+    text-decoration: none;
+    color: #2563eb;
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 8px;
+    transition: background 0.15s;
+}
+.app-user-link:hover { background: #eff6ff; }
+.app-user-link--register {
+    background: #2563eb;
+    color: #fff;
+}
+.app-user-link--register:hover { background: #1d4ed8; }
 .app-logo-link { display: inline-block; line-height: 0; text-decoration: none; }
 .app-logo {
     height: 36px;
@@ -167,7 +193,25 @@ def render_site_footer() -> str:
     """
 
 
-def render_app_header(query: str = "") -> str:
+def render_user_nav(user: dict | None = None) -> str:
+    if user:
+        uname = html.escape(user["username"])
+        return (
+            f'<div class="app-user-nav">'
+            f'<a class="app-user-link" href="/mypage">마이페이지</a>'
+            f'<span class="app-user-name">{uname}</span>'
+            f'<a class="app-user-link" href="/logout">로그아웃</a>'
+            f'</div>'
+        )
+    return (
+        '<div class="app-user-nav">'
+        '<a class="app-user-link" href="/login">로그인</a>'
+        '<a class="app-user-link app-user-link--register" href="/register">회원가입</a>'
+        '</div>'
+    )
+
+
+def render_app_header(query: str = "", user: dict | None = None) -> str:
     escaped_query = html.escape(str(query or ""))
     return f"""
     <header class="app-topbar">
@@ -175,6 +219,7 @@ def render_app_header(query: str = "") -> str:
             <a class="app-logo-link" href="/" aria-label="Jobneuron 홈으로">
                 <img class="app-logo" src="/static/jobneuron-logo.png?v=2" alt="Jobneuron">
             </a>
+            {render_user_nav(user)}
         </div>
     </header>
     <div class="app-search-band">
@@ -196,17 +241,17 @@ def render_app_header(query: str = "") -> str:
     """
 
 
-def render_app_page(title: str, content: str, query: str = "") -> str:
+def render_app_page(title: str, content: str, query: str = "", user: dict | None = None, extra_css: str = "") -> str:
     return f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{html.escape(title)} · Jobneuron</title>
-    <style>{SEARCH_PAGE_CSS}</style>
+    <style>{SEARCH_PAGE_CSS}{extra_css}</style>
 </head>
 <body class="app-body">
-    {render_app_header(query)}
+    {render_app_header(query, user)}
     <main class="app-main">
         {content}
     </main>

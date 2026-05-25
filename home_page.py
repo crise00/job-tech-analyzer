@@ -1,7 +1,21 @@
-import html
+import html as _html
 from urllib.parse import quote
 
 from search_layout import render_site_footer
+
+def _render_home_user_nav(user: dict | None) -> str:
+    if user:
+        uname = _html.escape(user["username"])
+        return (
+            f'<a class="home-nav-link" href="/mypage">마이페이지</a>'
+            f'<span class="home-nav-name">{uname}</span>'
+            f'<a class="home-nav-link" href="/logout">로그아웃</a>'
+        )
+    return (
+        '<a class="home-nav-link" href="/login">로그인</a>'
+        '<a class="home-nav-link home-nav-link--accent" href="/register">회원가입</a>'
+    )
+
 
 HOME_EXAMPLES = [
     ("백엔드 개발자", "백엔드 개발자"),
@@ -11,13 +25,13 @@ HOME_EXAMPLES = [
 ]
 
 
-def render_home_page() -> str:
+def render_home_page(user: dict | None = None) -> str:
     example_chips = ""
     for label, query in HOME_EXAMPLES:
         url = f"/search?query={quote(query)}"
         example_chips += (
-            f'<a class="home-chip" href="{html.escape(url, quote=True)}">'
-            f"{html.escape(label)}</a>"
+            f'<a class="home-chip" href="{_html.escape(url, quote=True)}">'
+            f"{_html.escape(label)}</a>"
         )
 
     return f"""<!DOCTYPE html>
@@ -108,10 +122,33 @@ def render_home_page() -> str:
         }}
         .site-footer-logo-link:hover .site-footer-logo {{ opacity: 0.75; }}
         .site-footer-text {{ margin: 8px 0 0; font-size: 0.8rem; color: #94a3b8; }}
+        .home-nav {{
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 10px;
+            padding: 14px 0 0;
+        }}
+        .home-nav-name {{
+            font-weight: 600; color: #334155; font-size: 0.93rem;
+        }}
+        .home-nav-link {{
+            text-decoration: none; color: #2563eb; font-size: 0.9rem;
+            font-weight: 600; padding: 6px 14px; border-radius: 8px;
+            transition: background 0.15s;
+        }}
+        .home-nav-link:hover {{ background: #eff6ff; }}
+        .home-nav-link--accent {{
+            background: #2563eb; color: #fff;
+        }}
+        .home-nav-link--accent:hover {{ background: #1d4ed8; }}
     </style>
 </head>
 <body class="home-body">
     <div class="home-wrap">
+        <nav class="home-nav">
+            {_render_home_user_nav(user)}
+        </nav>
         <header class="home-hero">
             <a class="home-logo-link" href="/" aria-label="Jobneuron 홈으로">
                 <img class="home-logo-main" src="/static/jobneuron-logo.png?v=2" alt="Jobneuron">

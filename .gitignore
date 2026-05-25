@@ -209,3 +209,8 @@ __marimo__/
 __pycache__/
 *.pyc
 .venv/
+
+# SQLite DB (사용자 데이터)
+data/*.db
+data/*.db-wal
+data/*.db-shm

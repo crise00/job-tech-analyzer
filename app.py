@@ -1,6 +1,6 @@
 import os
 from collections import defaultdict
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from urllib.parse import quote
@@ -16,12 +16,17 @@ from analyzer import (
     normalize_text,
     make_summary_message,
     compute_skill_gap,
+    suggest_skills_bulk,
 )
 from skill_resources import get_resources_for_skill, KIND_LABEL
 from home_page import render_home_page
 from search_layout import render_app_page, format_question_type_label
+from job_title_i18n import localize_job_title
+from auth import router as auth_router, get_current_user_from_cookie
+from database import get_skill_profile, get_certifications, get_bookmarked_urls
 
 app = FastAPI()
+app.include_router(auth_router)
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 if os.path.isdir(_STATIC_DIR):
@@ -50,6 +55,40 @@ LOCATION_CHIP_STYLE = (
     "background: #eef2ff; color: #3730a3; border-radius: 999px; font-size: 0.85em;"
 )
 LOCATION_MORE_STYLE = "color: #6b7280; font-size: 0.85em; margin-left: 4px;"
+
+BOOKMARK_TOGGLE_JS = """
+<script>
+function toggleBookmark(btn) {
+    var data = {
+        job_title: btn.dataset.title || '',
+        company: btn.dataset.company || '',
+        url: btn.dataset.url || '',
+        platform: btn.dataset.platform || '',
+        location: btn.dataset.location || ''
+    };
+    fetch('/api/bookmark/toggle', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(res) {
+        if (res.error === 'login_required') {
+            alert('로그인이 필요합니다.');
+            return;
+        }
+        if (res.bookmarked) {
+            btn.innerHTML = '\\u2605';
+            btn.style.color = '#f59e0b';
+        } else {
+            btn.innerHTML = '\\u2606';
+            btn.style.color = '#d1d5db';
+        }
+    })
+    .catch(function() { alert('오류가 발생했습니다.'); });
+}
+</script>
+"""
 
 
 def format_source_platform_label(platform: str) -> str:
@@ -133,7 +172,7 @@ def render_grouped_posting_links(postings: List[dict]) -> str:
     """
 
 
-def render_sources_section(result: dict) -> str:
+def render_sources_section(result: dict, user: dict = None, bookmarked_urls: set = None) -> str:
     breakdown = result.get("sources_breakdown") or []
     postings = result.get("postings") or []
     truncated = result.get("postings_truncated")
@@ -167,14 +206,39 @@ def render_sources_section(result: dict) -> str:
     grouped_postings = group_postings_by_role(postings)
     for (_, _, _), group in grouped_postings:
         sample = group[0]
-        title = html.escape(str(sample.get("job_title") or ""))
-        company = html.escape(str(sample.get("company") or "—"))
-        plat = html.escape(format_source_platform_label(sample.get("source_platform", "")))
+        raw_title = str(sample.get("job_title") or "")
+        title = html.escape(localize_job_title(raw_title))
+        company_raw = str(sample.get("company") or "—")
+        company = html.escape(company_raw)
+        plat_raw = format_source_platform_label(sample.get("source_platform", ""))
+        plat = html.escape(plat_raw)
+        first_url = str(sample.get("absolute_url") or "").strip()
+        first_loc = str(sample.get("location_name") or "").strip()
         count_badge = (
             f'<span style="margin-left: 6px; color: #6b7280; font-size: 0.85em;">({len(group)}건)</span>'
             if len(group) > 1
             else ""
         )
+        bookmark_btn = ""
+        if user:
+            is_saved = bookmarked_urls and first_url and first_url in bookmarked_urls
+            star = "&#9733;" if is_saved else "&#9734;"
+            star_color = "color:#f59e0b;" if is_saved else "color:#d1d5db;"
+            data_attrs = (
+                f'data-title="{html.escape(raw_title)}" '
+                f'data-company="{html.escape(company_raw)}" '
+                f'data-url="{html.escape(first_url)}" '
+                f'data-platform="{html.escape(plat_raw)}" '
+                f'data-location="{html.escape(first_loc)}"'
+            )
+            bookmark_btn = f"""
+            <td style="{TD_STYLE}">
+                <button type="button" class="bk-star" {data_attrs}
+                    onclick="toggleBookmark(this)"
+                    title="북마크" style="border:none; background:none;
+                    cursor:pointer; font-size:1.4rem; padding:4px; {star_color}">{star}</button>
+            </td>
+            """
         posting_rows += f"""
         <tr>
             <td style="{TD_STYLE}">{title}{count_badge}</td>
@@ -182,6 +246,7 @@ def render_sources_section(result: dict) -> str:
             <td style="{TD_STYLE}">{plat}</td>
             <td style="{TD_STYLE}">{render_location_chips(group)}</td>
             <td style="{TD_STYLE}">{render_grouped_posting_links(group)}</td>
+            {bookmark_btn}
         </tr>
         """
 
@@ -221,6 +286,7 @@ def render_sources_section(result: dict) -> str:
                     <th style="{TH_STYLE}">플랫폼</th>
                     <th style="{TH_STYLE}">채용 지역</th>
                     <th style="{TH_STYLE}">링크</th>
+                    {"<th style='" + TH_STYLE + "'>저장</th>" if user else ""}
                 </tr>
             </thead>
             <tbody>
@@ -230,51 +296,6 @@ def render_sources_section(result: dict) -> str:
         {note}
     </div>
     """
-
-
-def localize_job_title(job_title: str) -> str:
-    # 간단한 사전/치환 기반 한글화(표시용)
-    text = str(job_title or "").strip()
-    if not text:
-        return text
-
-    replacements = [
-        ("Senior", "시니어"),
-        ("Junior", "주니어"),
-        ("Staff", "스태프"),
-        ("Lead", "리드"),
-        ("Principal", "프린시펄"),
-        ("Backend", "백엔드"),
-        ("Back-End", "백엔드"),
-        ("Frontend", "프론트엔드"),
-        ("Front-End", "프론트엔드"),
-        ("Fullstack", "풀스택"),
-        ("Full-Stack", "풀스택"),
-        ("Data", "데이터"),
-        ("Software", "소프트웨어"),
-        ("Application", "애플리케이션"),
-        ("Security", "보안"),
-        ("Support", "지원"),
-        ("Engineer", "엔지니어"),
-        ("Developer", "개발자"),
-        ("Analyst", "분석가"),
-        ("Scientist", "사이언티스트"),
-        ("Architect", "아키텍트"),
-        ("Manager", "매니저"),
-        ("Consultant", "컨설턴트"),
-        ("Group Lead", "그룹 리드"),
-        ("Team Lead", "팀 리드"),
-        ("Contract", "계약직"),
-    ]
-
-    translated = text
-    for en, ko in replacements:
-        translated = re.sub(rf"\b{re.escape(en)}\b", ko, translated, flags=re.IGNORECASE)
-
-    translated = re.sub(r"\s+", " ", translated).strip()
-    if normalize_text(translated) == normalize_text(text):
-        return text
-    return f"{translated} ({text})"
 
 
 def render_skill_table(title: str, skills: list) -> str:
@@ -315,6 +336,7 @@ def render_skill_gap_form(
     query_val: Optional[str],
     selected_job_val: Optional[str],
     my_skills: str,
+    user: Optional[dict] = None,
 ) -> str:
     hidden = ""
     if selected_job_val:
@@ -322,16 +344,109 @@ def render_skill_gap_form(
     elif query_val:
         hidden += f'<input type="hidden" name="query" value="{html.escape(query_val)}">'
     escaped_skills = html.escape(my_skills or "")
+
+    save_btn = ""
+    if user:
+        save_btn = f"""
+        <form method="post" action="/profile/skills" style="margin-top:10px; display:flex; gap:8px; align-items:center;">
+            <input type="hidden" name="skills" value="{escaped_skills}" id="save-skills-hidden">
+            <button type="submit" style="padding:8px 16px; border:1px solid #2563eb; border-radius:10px;
+                background:#fff; color:#2563eb; font-weight:600; cursor:pointer; font-size:0.9rem;"
+                onclick="document.getElementById('save-skills-hidden').value=document.querySelector('input[name=my_skills]').value">
+                내 프로필에 저장
+            </button>
+            <span style="font-size:0.85rem; color:#64748b;">로그인 중: {html.escape(user['username'])}</span>
+        </form>
+        """
+    else:
+        save_btn = """
+        <p style="margin-top:10px; font-size:0.88rem; color:#64748b;">
+            <a href="/login" style="color:#2563eb; text-decoration:none; font-weight:600;">로그인</a>하면
+            스킬을 프로필에 저장해 매번 입력하지 않아도 됩니다.
+        </p>
+        """
+
     return f"""
     <div style="{CARD_STYLE} background: #fafafa;">
         <h3>내 스킬 갭 분석</h3>
         <p style="margin-top: 0; color: #555;">보유 스킬을 입력하면 직무 요구 기술 상위 항목과 비교합니다. (쉼표로 구분)</p>
-        <form method="get" action="/search" style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+        <form method="get" action="/search" id="gap-form" style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
             {hidden}
-            <input type="text" name="my_skills" value="{escaped_skills}" placeholder="예: Python, SQL, Docker" style="{INPUT_STYLE}">
+            <input type="text" name="my_skills" id="gap-skills-input" value="{escaped_skills}" placeholder="예: Python, SQL, Docker" style="{INPUT_STYLE}">
             <button type="submit" style="{BUTTON_STYLE}">갭 분석</button>
         </form>
+        <div id="skill-suggest-box" style="display:none; margin-top:10px; padding:12px 14px;
+            background:#fffbeb; border:1px solid #fde68a; border-radius:10px;"></div>
+        {save_btn}
     </div>
+    <script>
+    (function() {{
+        var form = document.getElementById('gap-form');
+        var input = document.getElementById('gap-skills-input');
+        var box = document.getElementById('skill-suggest-box');
+        if (!form || !input) return;
+
+        form.addEventListener('submit', function(e) {{
+            if (form.dataset.confirmed === 'yes') return;
+            var val = input.value.trim();
+            if (!val) return;
+            e.preventDefault();
+
+            fetch('/api/suggest-skills?skills=' + encodeURIComponent(val))
+                .then(function(r) {{ return r.json(); }})
+                .then(function(data) {{
+                    if (!data.suggestions || data.suggestions.length === 0) {{
+                        form.dataset.confirmed = 'yes';
+                        form.submit();
+                        return;
+                    }}
+                    var html = '<p style="margin:0 0 8px; font-weight:600; color:#92400e;">혹시 이런 기술을 말씀하신 건가요?</p>';
+                    data.suggestions.forEach(function(s, i) {{
+                        html += '<div style="display:flex; align-items:center; gap:8px; margin:6px 0;">'
+                            + '<span style="color:#78350f;"><strong>' + s.input + '</strong> → <strong>' + s.display + '</strong></span>'
+                            + '<button type="button" onclick="applySuggestion(' + i + ')" '
+                            + 'style="padding:4px 12px; border:1px solid #059669; border-radius:8px; background:#ecfdf5; color:#059669; font-weight:600; cursor:pointer; font-size:0.85rem;">적용</button>'
+                            + '<button type="button" onclick="skipSuggestion(' + i + ')" '
+                            + 'style="padding:4px 12px; border:1px solid #d1d5db; border-radius:8px; background:#fff; color:#6b7280; cursor:pointer; font-size:0.85rem;">무시</button>'
+                            + '</div>';
+                    }});
+                    html += '<button type="button" onclick="submitGap()" '
+                        + 'style="margin-top:10px; padding:8px 18px; border:0; border-radius:10px; background:#2563eb; color:#fff; font-weight:600; cursor:pointer;">이대로 분석하기</button>';
+                    box.innerHTML = html;
+                    box.style.display = 'block';
+                    window._suggestions = data.suggestions;
+                }})
+                .catch(function() {{
+                    form.dataset.confirmed = 'yes';
+                    form.submit();
+                }});
+        }});
+
+        window.applySuggestion = function(idx) {{
+            var s = window._suggestions[idx];
+            if (!s) return;
+            var parts = input.value.split(',').map(function(x) {{ return x.trim(); }});
+            for (var i = 0; i < parts.length; i++) {{
+                if (parts[i].toLowerCase() === s.input.toLowerCase()) {{
+                    parts[i] = s.display;
+                }}
+            }}
+            input.value = parts.join(', ');
+            var row = box.querySelectorAll('div')[idx];
+            if (row) row.innerHTML = '<span style="color:#059669;">✓ <strong>' + s.display + '</strong> 적용됨</span>';
+        }};
+
+        window.skipSuggestion = function(idx) {{
+            var row = box.querySelectorAll('div')[idx];
+            if (row) row.innerHTML = '<span style="color:#9ca3af;">건너뜀</span>';
+        }};
+
+        window.submitGap = function() {{
+            form.dataset.confirmed = 'yes';
+            form.submit();
+        }};
+    }})();
+    </script>
     """
 
 
@@ -399,16 +514,32 @@ def render_search_form(current_query: str = "") -> str:
 
 
 @app.get("/", response_class=HTMLResponse)
-def home():
-    return render_home_page()
+def home(request: Request):
+    user = get_current_user_from_cookie(request)
+    return render_home_page(user=user)
+
+
+@app.get("/api/suggest-skills")
+def api_suggest_skills(skills: str = Query("")):
+    from fastapi.responses import JSONResponse
+    suggestions = suggest_skills_bulk(skills)
+    return JSONResponse({"suggestions": suggestions})
 
 
 @app.get("/search", response_class=HTMLResponse)
 def search(
+    request: Request,
     query: Optional[str] = Query(None, description="검색할 직무 또는 질문"),
     selected_job: Optional[str] = Query(None, description="후보에서 선택한 확정 직무"),
     my_skills: Optional[str] = Query(None, description="내 보유 스킬(쉼표 구분)"),
 ):
+    user = get_current_user_from_cookie(request)
+
+    if user and not my_skills:
+        saved = get_skill_profile(user["id"])
+        if saved:
+            my_skills = saved
+
     if selected_job:
         # selected_job 경로는 재검색이 아니라 선택 확정: 정규화 없이 정확 직무 분석
         df = load_data()
@@ -453,7 +584,7 @@ def search(
             <p class="app-error">{html.escape(data['message'])}</p>
         </div>
         """
-        return render_app_page("검색 결과", content, data.get("query") or "")
+        return render_app_page("검색 결과", content, data.get("query") or "", user=user)
 
     if data["status"] == "multiple":
         candidate_links = ""
@@ -480,7 +611,7 @@ def search(
             <ul style="{CANDIDATE_LIST_STYLE}">{candidate_links}</ul>
         </div>
         """
-        return render_app_page("직무 후보", content, data["query"])
+        return render_app_page("직무 후보", content, data["query"], user=user)
 
     result = data["result"]
     question_type = data["question_type"]
@@ -496,13 +627,21 @@ def search(
         required_html = render_skill_table("요구 기술", result["required_skills"])
         preferred_html = render_skill_table("우대 기술", result["preferred_skills"])
 
-    skill_gap_form = render_skill_gap_form(query, selected_job, my_skills or "")
+    all_skills = my_skills or ""
+    if user:
+        cert_names = [c["name"] for c in get_certifications(user["id"])]
+        if cert_names:
+            combined = [s.strip() for s in all_skills.split(",") if s.strip()] + cert_names
+            all_skills = ", ".join(combined)
+
+    skill_gap_form = render_skill_gap_form(query, selected_job, my_skills or "", user=user)
     gap_results_html = ""
-    if my_skills and str(my_skills).strip():
-        gap = compute_skill_gap(result["required_skills"], my_skills, top_n=10)
+    if all_skills and str(all_skills).strip():
+        gap = compute_skill_gap(result["required_skills"], all_skills, top_n=10)
         gap_results_html = render_skill_gap_results(gap)
 
-    sources_html = render_sources_section(result)
+    bk_urls = get_bookmarked_urls(user["id"]) if user else set()
+    sources_html = render_sources_section(result, user=user, bookmarked_urls=bk_urls)
 
     qtype = format_question_type_label(question_type)
     job_title = html.escape(localize_job_title(result["job"]))
@@ -521,5 +660,5 @@ def search(
         {required_html}
         {preferred_html}
     </div>
-    """
-    return render_app_page("분석 결과", content, data.get("query") or selected_job or "")
+    """ + BOOKMARK_TOGGLE_JS
+    return render_app_page("분석 결과", content, data.get("query") or selected_job or "", user=user)
